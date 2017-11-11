@@ -14,6 +14,7 @@ import (
 
 type Multiplexer interface {
 	SetPort(uint8) error
+	GetOpener() driver.Opener
 }
 
 // //
@@ -116,9 +117,11 @@ func (d *Device) Close() error {
 // All devices must be closed once they are no longer in use.
 // For devices that use 10-bit I2C addresses, addr can be marked
 // as a 10-bit address with TenBit.
-func Open(o driver.Opener, addr int, mux Multiplexer, port uint8) (*Device, error) {
+func Open(addr int, mux Multiplexer, port uint8) (*Device, error) {
+
 	// first go around will setup the multiplexer
 	unmasked, tenbit := resolveAddr(addr)
+	o := mux.GetOpener()
 	conn, err := o.Open(unmasked, tenbit)
 	if err != nil {
 		return nil, err
