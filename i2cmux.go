@@ -56,7 +56,9 @@ func New(name string, opts ...func(*Mux) error) (*Mux, error) {
 	}
 
 	for _, option := range opts {
-		option(&m)
+		if err := option(&m); err != nil {
+			return nil, err
+		}
 	}
 
 	if m.debug {
@@ -114,8 +116,12 @@ func Reset(pin gpio.PinIO) func(*Mux) error {
 }
 
 func (m *Mux) reset() error {
-	m.resetPin.Out(gpio.Low)
-	m.resetPin.Out(gpio.High)
+	if err := m.resetPin.Out(gpio.Low); err != nil {
+		return err
+	}
+	if err := m.resetPin.Out(gpio.High); err != nil {
+		return err
+	}
 	time.Sleep(time.Millisecond * 100)
 	return nil
 }
