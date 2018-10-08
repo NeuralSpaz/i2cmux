@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"log"
 
-	"git.zool.com/i2cmux"
+	"github.com/NeuralSpaz/i2cmux"
 	"periph.io/x/periph/conn/physic"
 	"periph.io/x/periph/devices/bmxx80"
 	"periph.io/x/periph/host"
@@ -19,7 +19,7 @@ func Example() {
 	if _, err := host.Init(); err != nil {
 		log.Fatal(err)
 	}
-	mux, err := i2cmux.New("/dev/i2c-1", 0x40)
+	mux, err := i2cmux.New("/dev/i2c-1", i2cmux.Address(0x40))
 	if err != nil {
 		log.Fatalln(err)
 	}
