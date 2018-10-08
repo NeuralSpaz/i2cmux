@@ -1,136 +1,106 @@
-// Copyright 2016 The Go Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
-// https://github.com/golang/exp/blob/master/LICENSE
+// Copyright 2018 NeuralSpaz All rights reserved.
+// Use of this source code is governed under the Apache License, Version 2.0
+// that can be found in the LICENSE file.
 
-// Multiplex modifications Copyright 2017 NeuralSpaz
-
-// Package i2cmux allows users to read from and write to a slave I2C device with a multiplexer.
+// Package i2cmux provides a API for using a I²C(i2c) multiplexer such as a NXP PCA9548A.
 package i2cmux
 
 import (
-	"golang.org/x/exp/io/i2c/driver"
+	"errors"
+	"fmt"
+	"strconv"
+	"sync"
+
+	"periph.io/x/periph/conn/i2c"
+	"periph.io/x/periph/conn/i2c/i2creg"
+	"periph.io/x/periph/conn/physic"
 )
 
-type Multiplexer interface {
-	SetPort(uint8) error
-	GetOpener() driver.Opener
+// Mux is i2c mux such NXP PCA9548A
+type Mux struct {
+	sync.Mutex
+	numChannels    uint8
+	maxClock       physic.Frequency
+	currentClock   physic.Frequency
+	currentChannel uint8
+	bus            i2c.Bus
+	address        uint16
 }
 
-// //
-// type pca9548a struct {
-// 	address uint8
-// 	bus     i2c.Device
-// 	// Mutex protects port from changing during a read / write
-// 	sync.Mutex
-// 	port uint8
-// }
+// New creates a new Mux on an i2c bus given the bus name and mux i2c address
+func New(name string, address uint16) (*Mux, error) {
 
-// // SetPort switches the multiplexer to desired port
-// func (p *pca9548a) SetPort(port uint8) error {
-// 	p.Lock()
-// 	if p.port == port {
-// 		p.Unlock()
-// 		return nil
-// 	}
-
-// 	if port < 0 || port > 7 {
-// 		p.Unlock()
-// 		return fmt.Errorf("error setting port to %d : port must be be 0-7", port)
-// 	}
-// 	if err := p.bus.Write([]byte{byte(port)}); err != nil {
-// 		p.Unlock()
-// 		return err
-// 	}
-// 	p.port = port
-// 	p.Unlock()
-// 	return nil
-// }
-
-const tenbitMask = 1 << 12
-
-// Device represents an I2C device. Devices must be closed once
-// they are no longer in use.
-type Device struct {
-	conn driver.Conn
-	mux  Multiplexer
-	port uint8
-}
-
-// TenBit marks an I2C address as a 10-bit address.
-func TenBit(addr int) int {
-	return addr | tenbitMask
-}
-
-// Read reads len(buf) bytes from the device.
-func (d *Device) Read(buf []byte) error {
-	if err := d.mux.SetPort(d.port); err != nil {
-		return err
-	}
-	return d.conn.Tx(nil, buf)
-}
-
-// ReadReg is similar to Read but it reads from a register.
-func (d *Device) ReadReg(reg byte, buf []byte) error {
-	if err := d.mux.SetPort(d.port); err != nil {
-		return err
-	}
-	return d.conn.Tx([]byte{reg}, buf)
-}
-
-// Write writes the buffer to the device. If it is required to write to a
-// specific register, the register should be passed as the first byte in the
-// given buffer.
-func (d *Device) Write(buf []byte) (err error) {
-	if err := d.mux.SetPort(d.port); err != nil {
-		return err
-	}
-	return d.conn.Tx(buf, nil)
-}
-
-// WriteReg is similar to Write but writes to a register.
-func (d *Device) WriteReg(reg byte, buf []byte) (err error) {
-	if err := d.mux.SetPort(d.port); err != nil {
-		return err
-	}
-	// TODO(jbd): Do not allocate, not optimal.
-	return d.conn.Tx(append([]byte{reg}, buf...), nil)
-}
-
-// Tx is raw access to the device.
-func (d *Device) Tx(w, r []byte) (err error) {
-	if err := d.mux.SetPort(d.port); err != nil {
-		return err
-	}
-	return d.conn.Tx(w, r)
-}
-
-// Close closes the device and releases the underlying sources.
-func (d *Device) Close() error {
-	if err := d.mux.SetPort(d.port); err != nil {
-		return err
-	}
-	return d.conn.Close()
-}
-
-// Open opens a connection to an I2C device.
-// All devices must be closed once they are no longer in use.
-// For devices that use 10-bit I2C addresses, addr can be marked
-// as a 10-bit address with TenBit.
-func Open(addr int, mux Multiplexer, port uint8) (*Device, error) {
-
-	// first go around will setup the multiplexer
-	unmasked, tenbit := resolveAddr(addr)
-	o := mux.GetOpener()
-	conn, err := o.Open(unmasked, tenbit)
+	b, err := i2creg.Open(name)
 	if err != nil {
 		return nil, err
 	}
-	return &Device{conn: conn, mux: mux, port: port}, nil
+	fmt.Println(b)
+
+	m := Mux{
+		numChannels:    8,
+		maxClock:       400 * physic.KiloHertz,
+		currentChannel: 0,
+		bus:            b,
+		address:        address,
+	}
+	err = m.bus.Tx(address, []byte{0x01}, nil)
+	if err != nil {
+		return nil, errors.New("Failed to init channel on mux: " + err.Error())
+	}
+
+	return &m, nil
 }
 
-// resolveAddr returns whether the addr is 10-bit masked or not.
-// It also returns the unmasked address.
-func resolveAddr(addr int) (unmasked int, tenbit bool) {
-	return addr & (tenbitMask - 1), addr&tenbitMask == tenbitMask
+// Channel implements the i2c.Bus interface through the Mux
+type Channel struct {
+	mux     *Mux
+	channel uint8
+	clock   physic.Frequency
+}
+
+// RegisterChannel returns a i2c.Bus
+func (m *Mux) RegisterChannel(channel uint8) (Channel, error) {
+	if channel >= m.numChannels {
+		return Channel{}, errors.New("Channel number must be between 0 and " + strconv.Itoa(int(m.numChannels-1)))
+	}
+	return Channel{mux: m, channel: channel, clock: 100 * physic.KiloHertz}, nil
+}
+
+// String returns the channel number
+func (c Channel) String() string { return strconv.Itoa(int(c.channel)) }
+
+// Tx w or r can be omitted for one way communication
+func (c Channel) Tx(addr uint16, w, r []byte) error {
+	return c.mux.tx(c, addr, w, r)
+}
+
+// SetSpeed sets the clock of the Mux, Changing the channel clock will also change the underlying i2c bus clock
+func (c Channel) SetSpeed(f physic.Frequency) error {
+	if f > c.mux.maxClock {
+		return errors.New("maximum mux bus speed is " + c.mux.maxClock.String())
+	}
+	c.clock = f
+	return nil
+}
+
+// Tx raw tx on mux
+func (m *Mux) tx(channel Channel, address uint16, w, r []byte) error {
+	m.Lock()
+	defer m.Unlock()
+	fmt.Println("MUX TX", channel, address, w, r)
+	if channel.channel != m.currentChannel {
+		err := m.bus.Tx(m.address, []byte{1 << channel.channel}, nil)
+		if err != nil {
+			return errors.New("failed to write active channel on mux: " + err.Error())
+		}
+		m.currentChannel = channel.channel
+	}
+	if channel.clock != m.currentClock {
+		err := m.bus.SetSpeed(channel.clock)
+		if err != nil {
+			return errors.New("failed to change speed on channel " + channel.String() + ": " + err.Error())
+		}
+		m.currentClock = channel.clock
+	}
+	return m.bus.Tx(address, w, r)
 }
