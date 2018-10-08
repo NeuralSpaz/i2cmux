@@ -22,6 +22,7 @@ const (
 	// PCA9548AAddr is the default address
 	pca9548aAddr     = 0x70
 	pca9548aChannels = 8
+	pca9548aMaxClock = 400 * physic.KiloHertz
 )
 
 // Mux is i2c mux such NXP PCA9548A
@@ -47,17 +48,16 @@ func New(name string, opts ...func(*Mux) error) (*Mux, error) {
 
 	m := Mux{
 		numChannels:    pca9548aChannels,
-		maxClock:       400 * physic.KiloHertz,
+		maxClock:       pca9548aMaxClock,
 		currentChannel: 0x00,
 		bus:            b,
 		address:        pca9548aAddr,
-		resetPin:       "",
+		resetPin:       nil,
 	}
 
 	for _, option := range opts {
 		option(&m)
 	}
-	fmt.Printf("%+#v\n", m)
 
 	if m.debug {
 		fmt.Printf("using i2c port %s\n", b)
@@ -104,9 +104,9 @@ func Channels(channels uint8) func(*Mux) error {
 }
 
 // Reset use if you have a reset pin
-func Reset(pin PinIO) func(*Mux) error {
+func Reset(pin gpio.PinIO) func(*Mux) error {
 	return func(m *Mux) error {
-		if m.resetPin.Name() != "" {
+		if m.resetPin == nil {
 			m.resetPin = pin
 		}
 		return m.reset()
